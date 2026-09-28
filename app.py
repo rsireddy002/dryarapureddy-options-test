@@ -384,23 +384,82 @@ def candles_with_fallback(instrument_key, interval):
     return df, True
 
 
-def candlestick_fig(df, title, underlying_support=None, underlying_resistance=None, underlying_spot=None):
+def build_session_grid(trading_date, interval_minutes):
+    """Every {interval_minutes}-min slot from 09:15 to 15:40 for a given
+    date -- the full trading session, whether or not a candle has formed
+    for each slot yet."""
+    start = datetime.combine(trading_date, datetime.strptime("09:15", "%H:%M").time())
+    end = datetime.combine(trading_date, datetime.strptime("15:40", "%H:%M").time())
+    return pd.date_range(start=start, end=end, freq=f"{interval_minutes}min")
+
+
+def candlestick_fig(df, title, underlying_support=None, underlying_resistance=None,
+                     underlying_spot=None, interval_minutes=5):
     """Candlestick of the option's own premium (left axis). The underlying's
     18-day support/resistance (and current spot) are drawn as dashed lines
     against an invisible secondary right-hand axis, since the underlying's
     price scale (e.g. 1300s) has nothing to do with the premium's (e.g. 10s-100s)."""
     fig = go.Figure()
+    y_range = None
+    x_labels = None
     if not df.empty:
+        # Fixed 09:15-15:40 grid at the chart's own interval, with the
+        # actual candles merged onto it. Without this, a plain time-based
+        # (or naively category) x-axis sizes itself to however many
+        # candles exist RIGHT NOW -- so at 9:20 with only one candle, that
+        # one candle stretches to fill the entire chart width, and every
+        # candle after it re-squeezes the earlier ones as more arrive, and
+        # the still-forming latest candle ends up squeezed at the very
+        # edge instead of getting equal width. With a full-day grid, every
+        # slot -- filled or not yet formed -- always has its own fixed
+        # place, so a candle only ever occupies the one slot that belongs
+        # to it, from the first candle of the day onward.
+        trading_date = df["timestamp"].dt.date.iloc[-1]
+        grid = build_session_grid(trading_date, interval_minutes)
+        # Upstox candle timestamps come back timezone-aware (+05:30); match
+        # that on the generated grid too, or the merge below raises a
+        # naive-vs-aware ValueError.
+        source_tz = df["timestamp"].dt.tz
+        if source_tz is not None:
+            grid = grid.tz_localize(source_tz)
+        grid_df = pd.DataFrame({"timestamp": grid})
+        plot_df = grid_df.merge(df, on="timestamp", how="left")
+
+        # Category (not date/time) x-axis: gives every slot -- past,
+        # current, or still empty -- identical, fixed width.
+        x_labels = plot_df["timestamp"].dt.strftime("%H:%M")
         fig.add_trace(go.Candlestick(
-            x=df["timestamp"], open=df["open"], high=df["high"],
-            low=df["low"], close=df["close"], name=title,
+            x=x_labels, open=plot_df["open"], high=plot_df["high"],
+            low=plot_df["low"], close=plot_df["close"], name=title,
         ))
+
+        # A single candle with a wide range -- wick OR a genuine large
+        # open->close swing -- otherwise stretches the whole y-axis and
+        # squashes every other candle into a thin band. Range off the
+        # candle BODIES (open/close, unaffected by a long wick alone), and
+        # percentile-clip those bodies too so an extreme open/close swing
+        # doesn't dominate either -- but only once there's enough data for
+        # a percentile to mean anything; with only a few candles early in
+        # the session, fall back to plain min/max. (NaN slots from the
+        # empty part of the grid are ignored automatically by pandas.)
+        bodies = pd.concat([df["open"], df["close"]])
+        if len(df) >= 20:
+            q_lo, q_hi = 0.05, 0.95
+        elif len(df) >= 10:
+            q_lo, q_hi = 0.10, 0.90
+        else:
+            q_lo, q_hi = 0.0, 1.0
+        body_lo = bodies.quantile(q_lo)
+        body_hi = bodies.quantile(q_hi)
+        typical_range = (df["high"] - df["low"]).median()
+        pad = max(typical_range * 2, (body_hi - body_lo) * 0.15, body_hi * 0.01, 1)
+        y_range = [body_lo - pad, body_hi + pad]
 
     has_underlying_levels = underlying_support is not None and underlying_resistance is not None
     if has_underlying_levels:
         # Invisible secondary-axis trace purely so the axis (and its hover
         # values) exist -- the lines themselves are added via add_hline below.
-        x_anchor = [df["timestamp"].iloc[0]] if not df.empty else [datetime.now()]
+        x_anchor = [x_labels.iloc[0]] if x_labels is not None and not x_labels.empty else [datetime.now().strftime("%H:%M")]
         fig.add_trace(go.Scatter(
             x=x_anchor, y=[underlying_spot if underlying_spot is not None else underlying_resistance],
             mode="markers", marker=dict(size=0.1, color="rgba(0,0,0,0)"),
@@ -414,8 +473,12 @@ def candlestick_fig(df, title, underlying_support=None, underlying_resistance=No
             fig.add_hline(y=underlying_spot, yref="y2", line_dash="dot", line_color="gray",
                           annotation_text=f"Spot {round(underlying_spot, 2)}", annotation_position="top left")
 
-    layout_kwargs = dict(title=title, xaxis_rangeslider_visible=False, height=420,
-                          margin=dict(l=10, r=10, t=40, b=10))
+    layout_kwargs = dict(
+        title=title, height=420, margin=dict(l=10, r=10, t=40, b=10),
+        xaxis=dict(type="category", nticks=12, rangeslider_visible=False),
+    )
+    if y_range is not None:
+        layout_kwargs["yaxis"] = dict(range=y_range)
     if has_underlying_levels:
         layout_kwargs["yaxis2"] = dict(overlaying="y", side="right", title="Underlying", showgrid=False)
     fig.update_layout(**layout_kwargs)
@@ -571,7 +634,7 @@ def fetch_symbol_candles(entry, ltp, interval):
     }
 
 
-def render_symbol_block(symbol, entry, ltp):
+def render_symbol_block(symbol, entry, ltp, interval):
     """Pure render -- reads only what's already in `entry` (one symbol's
     slot in st.session_state['options_precomputed']). No network calls."""
     st.markdown(f"### {symbol}")
@@ -600,7 +663,7 @@ def render_symbol_block(symbol, entry, ltp):
     left, right = st.columns(2)
     with left:
         if entry.get("ce_key"):
-            st.plotly_chart(candlestick_fig(ce_df, f"{symbol} {atm_strike} CE", support, resistance, ltp), width="stretch")
+            st.plotly_chart(candlestick_fig(ce_df, f"{symbol} {atm_strike} CE", support, resistance, ltp, int(interval)), width="stretch")
             if ce_df.empty:
                 st.caption("No CE candle data available yet -- try Refresh Zones.")
             elif entry.get("ce_fallback"):
@@ -609,7 +672,7 @@ def render_symbol_block(symbol, entry, ltp):
             st.warning("No CE contract at ATM strike.")
     with right:
         if entry.get("pe_key"):
-            st.plotly_chart(candlestick_fig(pe_df, f"{symbol} {atm_strike} PE", support, resistance, ltp), width="stretch")
+            st.plotly_chart(candlestick_fig(pe_df, f"{symbol} {atm_strike} PE", support, resistance, ltp, int(interval)), width="stretch")
             if pe_df.empty:
                 st.caption("No PE candle data available yet -- try Refresh Zones.")
             elif entry.get("pe_fallback"):
@@ -818,7 +881,7 @@ st.header("Indices")
 for idx_symbol in ["NIFTY", "BANKNIFTY"]:
     entry = precomputed.get(idx_symbol)
     ltp = ltp_map.get(INDEX_SYMBOLS[idx_symbol])
-    render_symbol_block(idx_symbol, entry, ltp)
+    render_symbol_block(idx_symbol, entry, ltp, interval)
 
 st.header("F&O Stocks -- by sector")
 st.caption(f"{len(fo_stocks)} F&O stocks, grouped the same way as your dryarapureddy-sectors app.")
@@ -847,7 +910,7 @@ for sector_name, tab in zip(sector_names, sector_tabs):
         for stock_symbol in stocks_by_sector[sector_name]:
             entry = precomputed.get(stock_symbol)
             ltp = ltp_map.get(stock_name_to_key[stock_symbol])
-            render_symbol_block(stock_symbol, entry, ltp)
+            render_symbol_block(stock_symbol, entry, ltp, interval)
 
 st.caption("Data via Upstox. Support/Resistance is a standard 18-trading-day high/low composite "
            "computed on the underlying's own daily candles. Sector groupings copied from "
