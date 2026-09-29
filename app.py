@@ -423,6 +423,31 @@ def candlestick_fig(df, title, underlying_support=None, underlying_resistance=No
     return fig
 
 
+def underlying_fig(df, title, support=None, resistance=None, spot=None):
+    """Candlestick of the underlying itself (its own price scale, so the
+    18-day S/R lines sit directly on the same primary axis -- no secondary-
+    axis trick needed here, unlike candlestick_fig above where the option's
+    premium and the underlying's price are on totally different scales)."""
+    fig = go.Figure()
+    if not df.empty:
+        fig.add_trace(go.Candlestick(
+            x=df["timestamp"], open=df["open"], high=df["high"],
+            low=df["low"], close=df["close"], name=title,
+        ))
+    if resistance is not None:
+        fig.add_hline(y=resistance, line_dash="dash", line_color="crimson",
+                      annotation_text=f"R {round(resistance, 2)}", annotation_position="top right")
+    if support is not None:
+        fig.add_hline(y=support, line_dash="dash", line_color="seagreen",
+                      annotation_text=f"S {round(support, 2)}", annotation_position="bottom right")
+    if spot is not None:
+        fig.add_hline(y=spot, line_dash="dot", line_color="gray",
+                      annotation_text=f"Spot {round(spot, 2)}", annotation_position="top left")
+    fig.update_layout(title=title, xaxis_rangeslider_visible=False, height=420,
+                       margin=dict(l=10, r=10, t=40, b=10))
+    return fig
+
+
 def combined_symbol_fig(symbol, atm_strike, underlying_df, ce_df, pe_df,
                          support=None, resistance=None, spot=None):
     """The idea behind this view: one figure, three stacked panels (underlying
@@ -664,34 +689,47 @@ def render_symbol_block(symbol, entry, ltp):
     if support is not None:
         info_bits.append(f"Underlying 18d S/R: {round(support, 2)} / {round(resistance, 2)}")
     st.caption(" · ".join(info_bits))
-    st.caption("One synced view: underlying on top, that strike's CE and PE below -- "
-               "all three share the same time axis, so drag-zooming any panel moves them together.")
+    st.caption("Three separate views, side by side: underlying, CE, and PE -- each with its own "
+               "support/resistance/spot lines.")
 
     underlying_df = entry.get("underlying_df", pd.DataFrame())
     ce_df = entry.get("ce_df", pd.DataFrame())
     pe_df = entry.get("pe_df", pd.DataFrame())
 
-    if not entry.get("ce_key") and not entry.get("pe_key"):
-        st.warning("No CE/PE contract at ATM strike.")
-    else:
+    col_u, col_ce, col_pe = st.columns(3)
+    with col_u:
         st.plotly_chart(
-            combined_symbol_fig(symbol, atm_strike, underlying_df, ce_df, pe_df,
-                                 support=support, resistance=resistance, spot=ltp),
+            underlying_fig(underlying_df, f"{symbol} (underlying)", support, resistance, ltp),
             width="stretch",
         )
-        fallback_notes = []
-        if entry.get("underlying_fallback") and not underlying_df.empty:
-            fallback_notes.append(f"underlying: last session ({underlying_df['timestamp'].dt.date.max()})")
-        if entry.get("ce_key") and ce_df.empty:
-            fallback_notes.append("CE: no candle data yet -- try Refresh Zones")
-        elif entry.get("ce_fallback") and not ce_df.empty:
-            fallback_notes.append(f"CE: last session ({ce_df['timestamp'].dt.date.max()})")
-        if entry.get("pe_key") and pe_df.empty:
-            fallback_notes.append("PE: no candle data yet -- try Refresh Zones")
-        elif entry.get("pe_fallback") and not pe_df.empty:
-            fallback_notes.append(f"PE: last session ({pe_df['timestamp'].dt.date.max()})")
-        if fallback_notes:
-            st.caption(" · ".join(fallback_notes))
+        if underlying_df.empty:
+            st.caption("No underlying candle data available yet -- try Refresh Zones.")
+        elif entry.get("underlying_fallback"):
+            st.caption(f"Last session ({underlying_df['timestamp'].dt.date.max()}) -- no candles today yet.")
+    with col_ce:
+        if entry.get("ce_key"):
+            st.plotly_chart(
+                candlestick_fig(ce_df, f"{atm_strike} CE", support, resistance, ltp),
+                width="stretch",
+            )
+            if ce_df.empty:
+                st.caption("No CE candle data available yet -- try Refresh Zones.")
+            elif entry.get("ce_fallback"):
+                st.caption(f"Last session ({ce_df['timestamp'].dt.date.max()}) -- no candles today yet.")
+        else:
+            st.warning("No CE contract at ATM strike.")
+    with col_pe:
+        if entry.get("pe_key"):
+            st.plotly_chart(
+                candlestick_fig(pe_df, f"{atm_strike} PE", support, resistance, ltp),
+                width="stretch",
+            )
+            if pe_df.empty:
+                st.caption("No PE candle data available yet -- try Refresh Zones.")
+            elif entry.get("pe_fallback"):
+                st.caption(f"Last session ({pe_df['timestamp'].dt.date.max()}) -- no candles today yet.")
+        else:
+            st.warning("No PE contract at ATM strike.")
     st.divider()
 
 
