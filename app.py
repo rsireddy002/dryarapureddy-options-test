@@ -385,11 +385,44 @@ def candles_with_fallback(instrument_key, interval):
     return df, True
 
 
+def _clean_candles(df):
+    """Drops candle rows with impossible OHLC values -- a stray 0 or NaN,
+    seen on illiquid option strikes before their first real trade, or from
+    a bad/partial API response. Left uncleaned, a single ~0 price forces
+    Plotly's y-axis to span from ~0 up to the real price range, making that
+    one candle's wick look like it swallows the entire chart and squashing
+    every other candle into an unreadable sliver at the top."""
+    if df.empty:
+        return df
+    mask = (
+        (df["open"] > 0) & (df["high"] > 0) & (df["low"] > 0) & (df["close"] > 0)
+        & df["open"].notna() & df["high"].notna() & df["low"].notna() & df["close"].notna()
+        & (df["high"] >= df["low"])
+    )
+    return df[mask]
+
+
+def _lock_price_range(fig, df, axis="yaxis"):
+    """Explicitly pins the y-axis to the candle data's own high/low (with a
+    little padding), so a support/resistance line far outside today's actual
+    range (common with an 18-day high/low composite vs. a much tighter
+    intraday range) can no longer force Plotly to auto-expand the axis and
+    squash the real candles into a thin band. A line that falls outside this
+    range simply won't be drawn -- which is the right call, since a level
+    price never approached today isn't worth losing chart resolution over."""
+    if df.empty:
+        return
+    y_low, y_high = df["low"].min(), df["high"].max()
+    pad = (y_high - y_low) * 0.08 or max(y_high * 0.01, 1)
+    fig.update_layout(**{axis: dict(range=[y_low - pad, y_high + pad])})
+
+
 def candlestick_fig(df, title, underlying_support=None, underlying_resistance=None, underlying_spot=None):
     """Candlestick of the option's own premium (left axis). The underlying's
     18-day support/resistance (and current spot) are drawn as dashed lines
     against an invisible secondary right-hand axis, since the underlying's
     price scale (e.g. 1300s) has nothing to do with the premium's (e.g. 10s-100s)."""
+    df = _clean_candles(df)
     fig = go.Figure()
     if not df.empty:
         fig.add_trace(go.Candlestick(
@@ -420,6 +453,11 @@ def candlestick_fig(df, title, underlying_support=None, underlying_resistance=No
     if has_underlying_levels:
         layout_kwargs["yaxis2"] = dict(overlaying="y", side="right", title="Underlying", showgrid=False)
     fig.update_layout(**layout_kwargs)
+    # The underlying's S/R lines live on yaxis2 (secondary), so they can't
+    # stretch THIS premium axis -- but a bad candle (pre-cleaning) or a
+    # naturally huge intraday premium swing still could, so lock it to the
+    # option's own range for the same readability reason as underlying_fig.
+    _lock_price_range(fig, df, axis="yaxis")
     return fig
 
 
@@ -427,7 +465,12 @@ def underlying_fig(df, title, support=None, resistance=None, spot=None):
     """Candlestick of the underlying itself (its own price scale, so the
     18-day S/R lines sit directly on the same primary axis -- no secondary-
     axis trick needed here, unlike candlestick_fig above where the option's
-    premium and the underlying's price are on totally different scales)."""
+    premium and the underlying's price are on totally different scales).
+    The axis is explicitly locked to the candle data's own range (see
+    _lock_price_range) so a support/resistance level far outside today's
+    actual price action doesn't force the whole chart to zoom out and
+    squash today's candles into a thin, unreadable band."""
+    df = _clean_candles(df)
     fig = go.Figure()
     if not df.empty:
         fig.add_trace(go.Candlestick(
@@ -445,6 +488,7 @@ def underlying_fig(df, title, support=None, resistance=None, spot=None):
                       annotation_text=f"Spot {round(spot, 2)}", annotation_position="top left")
     fig.update_layout(title=title, xaxis_rangeslider_visible=False, height=420,
                        margin=dict(l=10, r=10, t=40, b=10))
+    _lock_price_range(fig, df, axis="yaxis")
     return fig
 
 
