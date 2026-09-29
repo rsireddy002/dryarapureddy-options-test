@@ -417,6 +417,20 @@ def _lock_price_range(fig, df, axis="yaxis"):
     fig.update_layout(**{axis: dict(range=[y_low - pad, y_high + pad])})
 
 
+def _x_labels(df):
+    """HH:MM labels used as the x-axis values, combined with a category-type
+    axis below, so every candle gets an equal-width slot based on its
+    POSITION in the sequence rather than its real elapsed time. With a plain
+    datetime x-axis, Plotly spaces candles by actual clock time -- so a
+    thinly-traded stretch (or just a handful of candles early in the day
+    when few have printed yet) leaves most of the axis blank and stretches
+    the few real candles to fill the remaining width, making one or two of
+    them look like they're swallowing the whole chart. A category axis
+    packs every candle tight against its neighbor regardless of the time
+    gap between them, which is the standard fix for this Plotly behavior."""
+    return df["timestamp"].dt.strftime("%H:%M")
+
+
 def candlestick_fig(df, title, underlying_support=None, underlying_resistance=None, underlying_spot=None):
     """Candlestick of the option's own premium (left axis). The underlying's
     18-day support/resistance (and current spot) are drawn as dashed lines
@@ -424,9 +438,10 @@ def candlestick_fig(df, title, underlying_support=None, underlying_resistance=No
     price scale (e.g. 1300s) has nothing to do with the premium's (e.g. 10s-100s)."""
     df = _clean_candles(df)
     fig = go.Figure()
+    x_labels = _x_labels(df) if not df.empty else None
     if not df.empty:
         fig.add_trace(go.Candlestick(
-            x=df["timestamp"], open=df["open"], high=df["high"],
+            x=x_labels, open=df["open"], high=df["high"],
             low=df["low"], close=df["close"], name=title,
         ))
 
@@ -434,7 +449,7 @@ def candlestick_fig(df, title, underlying_support=None, underlying_resistance=No
     if has_underlying_levels:
         # Invisible secondary-axis trace purely so the axis (and its hover
         # values) exist -- the lines themselves are added via add_hline below.
-        x_anchor = [df["timestamp"].iloc[0]] if not df.empty else [datetime.now()]
+        x_anchor = [x_labels.iloc[0]] if not df.empty else ["00:00"]
         fig.add_trace(go.Scatter(
             x=x_anchor, y=[underlying_spot if underlying_spot is not None else underlying_resistance],
             mode="markers", marker=dict(size=0.1, color="rgba(0,0,0,0)"),
@@ -453,6 +468,7 @@ def candlestick_fig(df, title, underlying_support=None, underlying_resistance=No
     if has_underlying_levels:
         layout_kwargs["yaxis2"] = dict(overlaying="y", side="right", title="Underlying", showgrid=False)
     fig.update_layout(**layout_kwargs)
+    fig.update_xaxes(type="category")
     # The underlying's S/R lines live on yaxis2 (secondary), so they can't
     # stretch THIS premium axis -- but a bad candle (pre-cleaning) or a
     # naturally huge intraday premium swing still could, so lock it to the
@@ -474,7 +490,7 @@ def underlying_fig(df, title, support=None, resistance=None, spot=None):
     fig = go.Figure()
     if not df.empty:
         fig.add_trace(go.Candlestick(
-            x=df["timestamp"], open=df["open"], high=df["high"],
+            x=_x_labels(df), open=df["open"], high=df["high"],
             low=df["low"], close=df["close"], name=title,
         ))
     if resistance is not None:
@@ -488,6 +504,7 @@ def underlying_fig(df, title, support=None, resistance=None, spot=None):
                       annotation_text=f"Spot {round(spot, 2)}", annotation_position="top left")
     fig.update_layout(title=title, xaxis_rangeslider_visible=False, height=420,
                        margin=dict(l=10, r=10, t=40, b=10))
+    fig.update_xaxes(type="category")
     _lock_price_range(fig, df, axis="yaxis")
     return fig
 
