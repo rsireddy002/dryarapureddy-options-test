@@ -258,6 +258,14 @@ def resolve_and_fetch(symbol, underlying_key, ltp, headers):
 
     ce_df, ce_fallback = candles_with_fallback(ce_key, headers, CANDLE_INTERVAL) if ce_key else (pd.DataFrame(), False)
     pe_df, pe_fallback = candles_with_fallback(pe_key, headers, CANDLE_INTERVAL) if pe_key else (pd.DataFrame(), False)
+    # Underlying's own candles -- added so the scheduled cache matches
+    # app.py's "Run Precompute" button, which fetches this same third series
+    # (see fetch_symbol_candles in app.py). Without this, every cache this
+    # script writes silently omits underlying_df, so the underlying panel in
+    # the three-panel view is empty for every symbol until someone clicks
+    # "Run Precompute" by hand -- and the next scheduled run overwrites that
+    # with the same gap again.
+    underlying_df, underlying_fallback = candles_with_fallback(underlying_key, headers, CANDLE_INTERVAL)
 
     return {
         "underlying_key": underlying_key,
@@ -273,6 +281,8 @@ def resolve_and_fetch(symbol, underlying_key, ltp, headers):
         "ce_fallback": ce_fallback,
         "pe_df": _df_to_records(pe_df),
         "pe_fallback": pe_fallback,
+        "underlying_df": _df_to_records(underlying_df),
+        "underlying_fallback": underlying_fallback,
     }
 
 

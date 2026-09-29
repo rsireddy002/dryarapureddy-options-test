@@ -809,6 +809,12 @@ def load_cache_from_disk():
         entry = dict(entry)
         entry["ce_df"] = _records_to_df(entry.get("ce_df", []))
         entry["pe_df"] = _records_to_df(entry.get("pe_df", []))
+        # underlying_df/underlying_fallback are only present in caches written
+        # by a github_precompute.py new enough to fetch the underlying's own
+        # candles -- older cached JSON (or a cache from before that fetch was
+        # added) simply won't have this key, so .get(..., []) degrades to an
+        # empty underlying chart instead of crashing on a missing key.
+        entry["underlying_df"] = _records_to_df(entry.get("underlying_df", []))
         precomputed[symbol] = entry
     return {
         "precomputed": precomputed,
